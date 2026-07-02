@@ -1,4 +1,4 @@
-# telegram_api.py - Normal Response (No Encryption)
+# telegram_api.py - Enhanced with Phone Number Detection
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -43,6 +43,87 @@ class TelegramUserInfo:
         
         return user_input
     
+    def find_phone_number(self, username, page_text, soup):
+        """Multiple methods to find phone number"""
+        phone_number = None
+        
+        # Method 1: Check bio for phone number
+        bio_elem = soup.find('div', {'class': 'tgme_page_description'})
+        if bio_elem:
+            bio_text = bio_elem.text.strip()
+            if bio_text:
+                # Phone number patterns
+                phone_patterns = [
+                    r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+                    r'\+?\d{1,3}[\s\-]?\d{4,5}[\s\-]?\d{4,5}',
+                    r'\+?\d{10,15}',
+                    r'\d{4}[\s\-]?\d{3}[\s\-]?\d{4}',
+                    r'\d{3}[\s\-]?\d{3}[\s\-]?\d{4}',
+                    r'\d{11,15}'
+                ]
+                
+                for pattern in phone_patterns:
+                    phone_match = re.search(pattern, bio_text)
+                    if phone_match:
+                        phone_number = phone_match.group(0)
+                        break
+        
+        # Method 2: Check username if it contains number
+        if not phone_number:
+            # Some users put phone in username
+            username_pattern = r'\+?\d{10,15}'
+            phone_match = re.search(username_pattern, username)
+            if phone_match:
+                phone_number = phone_match.group(0)
+        
+        # Method 3: Check page text for phone number
+        if not phone_number:
+            phone_patterns = [
+                r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+                r'\+?\d{10,15}'
+            ]
+            for pattern in phone_patterns:
+                phone_match = re.search(pattern, page_text)
+                if phone_match:
+                    phone_number = phone_match.group(0)
+                    break
+        
+        # Method 4: Search Google for phone number
+        if not phone_number:
+            try:
+                search_url = f"https://www.google.com/search?q={username}+telegram+phone+number"
+                response = self.session.get(search_url, timeout=5)
+                if response.status_code == 200:
+                    phone_patterns = [
+                        r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+                        r'\+?\d{10,15}'
+                    ]
+                    for pattern in phone_patterns:
+                        phone_match = re.search(pattern, response.text)
+                        if phone_match:
+                            phone_number = phone_match.group(0)
+                            break
+            except:
+                pass
+        
+        # Method 5: Check if phone is in display name
+        if not phone_number:
+            name_elem = soup.find('div', {'class': 'tgme_page_title'})
+            if name_elem:
+                name_text = name_elem.text.strip()
+                if name_text:
+                    phone_patterns = [
+                        r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+                        r'\+?\d{10,15}'
+                    ]
+                    for pattern in phone_patterns:
+                        phone_match = re.search(pattern, name_text)
+                        if phone_match:
+                            phone_number = phone_match.group(0)
+                            break
+        
+        return phone_number
+    
     def fetch_by_username(self, username):
         """Fetch user info by username"""
         try:
@@ -53,6 +134,7 @@ class TelegramUserInfo:
                 return {"success": False, "error": "User not found"}
             
             soup = BeautifulSoup(response.text, 'html.parser')
+            page_text = response.text
             
             result = {
                 "success": True,
@@ -62,6 +144,7 @@ class TelegramUserInfo:
                 "last_name": None,
                 "bio": None,
                 "phone_number": None,
+                "phone_found": False,
                 "profile_pic": None,
                 "verified": False,
                 "scam": False,
@@ -75,7 +158,8 @@ class TelegramUserInfo:
                 "website": None,
                 "location": None,
                 "id": None,
-                "join_date": None
+                "join_date": None,
+                "phone_method": None
             }
             
             # Get username
@@ -103,6 +187,21 @@ class TelegramUserInfo:
                 bio_text = bio_elem.text.strip()
                 if bio_text:
                     result['bio'] = bio_text
+            
+            # FIND PHONE NUMBER - Enhanced
+            phone_data = self.find_phone_number(username, page_text, soup)
+            if phone_data:
+                result['phone_number'] = phone_data
+                result['phone_found'] = True
+                # Determine how phone was found
+                if phone_data in str(result.get('bio', '')):
+                    result['phone_method'] = "Found in bio"
+                elif phone_data in username:
+                    result['phone_method'] = "Found in username"
+                elif phone_data in str(result.get('full_name', '')):
+                    result['phone_method'] = "Found in display name"
+                else:
+                    result['phone_method'] = "Found in page source"
             
             # Get profile picture
             img_elem = soup.find('img', {'class': 'tgme_page_photo_image'})
@@ -132,7 +231,6 @@ class TelegramUserInfo:
                         result['members_count'] = int(numbers[0])
             
             # Get last seen / online status
-            page_text = response.text
             if "online" in page_text.lower():
                 result['last_seen'] = "Online"
                 result['online_status'] = "online"
@@ -149,20 +247,6 @@ class TelegramUserInfo:
             id_match = re.search(r'"user_id":(\d+)', page_text)
             if id_match:
                 result['id'] = int(id_match.group(1))
-            
-            # Try to get phone number from bio
-            if result['bio']:
-                phone_patterns = [
-                    r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
-                    r'\+\d{10,15}',
-                    r'\d{4}[\s\-]?\d{3}[\s\-]?\d{4}',
-                    r'\d{11,15}'
-                ]
-                for pattern in phone_patterns:
-                    phone_match = re.search(pattern, result['bio'])
-                    if phone_match:
-                        result['phone_number'] = phone_match.group(0)
-                        break
             
             # Get website
             website_elem = soup.find('a', {'class': 'tgme_page_website'})
@@ -186,7 +270,6 @@ class TelegramUserInfo:
     def fetch_by_id(self, user_id):
         """Fetch user info by Telegram ID"""
         try:
-            # Try to find username from ID via search
             search_url = f"https://www.google.com/search?q=telegram+user+id+{user_id}"
             try:
                 response = self.session.get(search_url, timeout=5)
@@ -220,11 +303,9 @@ class TelegramUserInfo:
         """Main function to fetch user info"""
         user_input = str(user_input).strip()
         
-        # Check if it's a numeric ID
         if user_input.isdigit() and len(user_input) >= 5:
             return self.fetch_by_id(user_input)
         
-        # Otherwise treat as username
         username = self.extract_username(user_input)
         if not username:
             return {
@@ -242,16 +323,21 @@ api = TelegramUserInfo()
 def home():
     return jsonify({
         "service": "Telegram User Info API",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "status": "active",
+        "features": {
+            "phone_number": "Auto-detects phone numbers from bio, username, display name, and page source",
+            "username": "Support for @username, username, t.me/username",
+            "id": "Support for Telegram IDs"
+        },
         "endpoints": {
             "/info": "GET - /info?telegram=USERNAME",
             "/info": "GET - /info?telegram=USER_ID",
+            "/phone": "GET - /phone?telegram=USERNAME - Only phone number"
         },
         "examples": {
             "by_username": "/info?telegram=durov",
-            "by_id": "/info?telegram=6762399638",
-            "with_at": "/info?telegram=@durov"
+            "by_id": "/info?telegram=6762399638"
         }
     })
 
@@ -292,27 +378,41 @@ def get_telegram_info():
             "timestamp": datetime.now().isoformat()
         }), 500
 
-@app.route('/validate')
-def validate_input():
-    """Validate if input is username or ID"""
-    input_value = request.args.get('input')
+@app.route('/phone')
+def get_phone_only():
+    """Only get phone number"""
+    telegram_input = request.args.get('telegram')
     
-    if not input_value:
+    if not telegram_input:
         return jsonify({
             "success": False,
-            "error": "Missing input parameter"
+            "error": "Missing telegram parameter",
+            "usage": "/phone?telegram=username"
         }), 400
     
-    is_id = input_value.isdigit() and len(input_value) >= 5
-    is_username = bool(re.match(r'^[a-zA-Z0-9_]{5,}$', input_value))
-    
-    return jsonify({
-        "success": True,
-        "input": input_value,
-        "type": "id" if is_id else "username" if is_username else "unknown",
-        "is_id": is_id,
-        "is_username": is_username
-    })
+    try:
+        result = api.fetch_user_info(telegram_input)
+        
+        if not result.get('success'):
+            return jsonify({
+                "success": False,
+                "error": result.get('error', 'User not found')
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "username": result.get('username'),
+            "phone_number": result.get('phone_number'),
+            "phone_found": result.get('phone_found', False),
+            "phone_method": result.get('phone_method'),
+            "timestamp": datetime.now().isoformat()
+        })
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # Vercel handler
 def handler(request):
