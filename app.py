@@ -1,4 +1,4 @@
-# telegram_api.py - Improved Version with Better Data Extraction
+# telegram_api.py - Normal Response (No Encryption)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -7,35 +7,12 @@ from bs4 import BeautifulSoup
 import re
 import json
 from datetime import datetime
-import hashlib
-import base64
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
 
 app = Flask(__name__)
 CORS(app)
-
-# ==================== ENCRYPTION CONFIG ====================
-VALID_KEY = "HACKER"
-SECRET_KEY = hashlib.sha256(VALID_KEY.encode()).digest()
-
-class EncryptionManager:
-    @staticmethod
-    def encrypt_data(data):
-        try:
-            if isinstance(data, dict):
-                data = json.dumps(data)
-            iv = os.urandom(16)
-            cipher = AES.new(SECRET_KEY, AES.MODE_CBC, iv)
-            encrypted = cipher.encrypt(pad(data.encode('utf-8'), AES.block_size))
-            combined = iv + encrypted
-            return base64.b64encode(combined).decode('utf-8')
-        except:
-            return None
 
 class TelegramUserInfo:
     def __init__(self):
@@ -67,7 +44,7 @@ class TelegramUserInfo:
         return user_input
     
     def fetch_by_username(self, username):
-        """Fetch user info by username with improved extraction"""
+        """Fetch user info by username"""
         try:
             url = f"https://t.me/{username}"
             response = self.session.get(url, timeout=10, allow_redirects=True)
@@ -93,12 +70,12 @@ class TelegramUserInfo:
                 "type": "user",
                 "members_count": None,
                 "last_seen": None,
+                "online_status": None,
                 "url": f"https://t.me/{username}",
                 "website": None,
                 "location": None,
                 "id": None,
-                "join_date": None,
-                "online_status": None
+                "join_date": None
             }
             
             # Get username
@@ -108,20 +85,19 @@ class TelegramUserInfo:
                 if username_text:
                     result['username'] = username_text.replace('@', '')
             
-            # Get full name (improved)
+            # Get full name
             name_elem = soup.find('div', {'class': 'tgme_page_title'})
             if name_elem:
                 name_text = name_elem.text.strip()
                 if name_text:
                     result['full_name'] = name_text
-                    # Try to split name
                     name_parts = name_text.split()
                     if name_parts:
                         result['first_name'] = name_parts[0]
                         if len(name_parts) > 1:
                             result['last_name'] = ' '.join(name_parts[1:])
             
-            # Get bio (improved)
+            # Get bio
             bio_elem = soup.find('div', {'class': 'tgme_page_description'})
             if bio_elem:
                 bio_text = bio_elem.text.strip()
@@ -155,73 +131,47 @@ class TelegramUserInfo:
                     if numbers:
                         result['members_count'] = int(numbers[0])
             
-            # IMPROVED: Get last seen / online status
+            # Get last seen / online status
             page_text = response.text
             if "online" in page_text.lower():
                 result['last_seen'] = "Online"
                 result['online_status'] = "online"
             elif "last seen" in page_text.lower():
-                # Extract last seen
                 match = re.search(r'last seen (.+?)[<\.]', page_text, re.IGNORECASE)
                 if match:
                     result['last_seen'] = match.group(1).strip()
                     result['online_status'] = "offline"
-                else:
-                    # Try different pattern
-                    match = re.search(r'Last seen (.+?)(?:<|\.|\n)', page_text, re.IGNORECASE)
-                    if match:
-                        result['last_seen'] = match.group(1).strip()
-                        result['online_status'] = "offline"
-            elif "last seen" not in page_text and "online" not in page_text.lower():
+            else:
                 result['last_seen'] = "Hidden/Private"
                 result['online_status'] = "hidden"
             
-            # IMPROVED: Try to get user ID from multiple sources
-            # Method 1: From page source
+            # Try to get user ID
             id_match = re.search(r'"user_id":(\d+)', page_text)
             if id_match:
                 result['id'] = int(id_match.group(1))
-            else:
-                # Method 2: From other patterns
-                id_match = re.search(r'user_id["\s:=]+(\d+)', page_text)
-                if id_match:
-                    result['id'] = int(id_match.group(1))
-                else:
-                    # Method 3: From channel/group ID
-                    id_match = re.search(r'channel_id["\s:=]+(\d+)', page_text)
-                    if id_match:
-                        result['id'] = int(id_match.group(1))
             
-            # IMPROVED: Try to get phone number (rarely available)
-            # Check if phone number is in bio
+            # Try to get phone number from bio
             if result['bio']:
-                # Look for phone number patterns in bio
                 phone_patterns = [
                     r'\+?\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
                     r'\+\d{10,15}',
                     r'\d{4}[\s\-]?\d{3}[\s\-]?\d{4}',
                     r'\d{11,15}'
                 ]
-                
                 for pattern in phone_patterns:
                     phone_match = re.search(pattern, result['bio'])
                     if phone_match:
                         result['phone_number'] = phone_match.group(0)
                         break
             
-            # IMPROVED: Get join date / creation info
-            date_match = re.search(r'(\d{1,2}\s+\w+\s+\d{4})', page_text)
-            if date_match:
-                result['join_date'] = date_match.group(1)
-            
-            # Get website if available
+            # Get website
             website_elem = soup.find('a', {'class': 'tgme_page_website'})
             if website_elem:
                 website_text = website_elem.text.strip()
                 if website_text:
                     result['website'] = website_text
             
-            # Get location if available
+            # Get location
             location_elem = soup.find('div', {'class': 'tgme_page_location'})
             if location_elem:
                 location_text = location_elem.text.strip()
@@ -236,18 +186,16 @@ class TelegramUserInfo:
     def fetch_by_id(self, user_id):
         """Fetch user info by Telegram ID"""
         try:
-            # Search for username from ID
-            search_url = f"https://www.google.com/search?q=telegram+{user_id}"
+            # Try to find username from ID via search
+            search_url = f"https://www.google.com/search?q=telegram+user+id+{user_id}"
             try:
                 response = self.session.get(search_url, timeout=5)
                 if response.status_code == 200:
-                    # Look for username patterns
                     username_patterns = [
                         r't\.me/([a-zA-Z0-9_]+)',
                         r'telegram\.me/([a-zA-Z0-9_]+)',
                         r'@([a-zA-Z0-9_]+)'
                     ]
-                    
                     for pattern in username_patterns:
                         matches = re.findall(pattern, response.text)
                         if matches:
@@ -272,9 +220,11 @@ class TelegramUserInfo:
         """Main function to fetch user info"""
         user_input = str(user_input).strip()
         
+        # Check if it's a numeric ID
         if user_input.isdigit() and len(user_input) >= 5:
             return self.fetch_by_id(user_input)
         
+        # Otherwise treat as username
         username = self.extract_username(user_input)
         if not username:
             return {
@@ -294,40 +244,30 @@ def home():
         "service": "Telegram User Info API",
         "version": "2.0.0",
         "status": "active",
-        "encryption": "AES-256-CBC",
-        "key_required": "HACKER",
         "endpoints": {
-            "/info": "GET - /info?telegram=USERNAME&key=HACKER",
-            "/info": "GET - /info?telegram=USER_ID&key=HACKER",
+            "/info": "GET - /info?telegram=USERNAME",
+            "/info": "GET - /info?telegram=USER_ID",
+        },
+        "examples": {
+            "by_username": "/info?telegram=durov",
+            "by_id": "/info?telegram=6762399638",
+            "with_at": "/info?telegram=@durov"
         }
     })
 
 @app.route('/info')
 def get_telegram_info():
     telegram_input = request.args.get('telegram')
-    user_key = request.args.get('key')
-    
-    if not user_key:
-        return jsonify({
-            "success": False,
-            "error": "KEY IS MISSING!",
-            "required_key": "HACKER",
-            "usage": "/info?telegram=username&key=HACKER",
-            "timestamp": datetime.now().isoformat()
-        }), 401
-    
-    if user_key != VALID_KEY:
-        return jsonify({
-            "success": False,
-            "error": "INVALID KEY! ACCESS DENIED",
-            "timestamp": datetime.now().isoformat()
-        }), 403
     
     if not telegram_input:
         return jsonify({
             "success": False,
             "error": "Missing telegram parameter",
-            "usage": "/info?telegram=username&key=HACKER",
+            "usage": "/info?telegram=username",
+            "examples": {
+                "by_username": "/info?telegram=durov",
+                "by_id": "/info?telegram=6762399638"
+            },
             "timestamp": datetime.now().isoformat()
         }), 400
     
@@ -343,20 +283,7 @@ def get_telegram_info():
             }), 404
         
         result['timestamp'] = datetime.now().isoformat()
-        result['encrypted'] = True
-        
-        encrypted_response = EncryptionManager.encrypt_data(result)
-        
-        if encrypted_response:
-            return jsonify({
-                "success": True,
-                "encrypted": True,
-                "data": encrypted_response,
-                "message": "Response encrypted with key: HACKER",
-                "timestamp": datetime.now().isoformat()
-            })
-        else:
-            return jsonify(result)
+        return jsonify(result)
             
     except Exception as e:
         return jsonify({
@@ -364,6 +291,28 @@ def get_telegram_info():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
+
+@app.route('/validate')
+def validate_input():
+    """Validate if input is username or ID"""
+    input_value = request.args.get('input')
+    
+    if not input_value:
+        return jsonify({
+            "success": False,
+            "error": "Missing input parameter"
+        }), 400
+    
+    is_id = input_value.isdigit() and len(input_value) >= 5
+    is_username = bool(re.match(r'^[a-zA-Z0-9_]{5,}$', input_value))
+    
+    return jsonify({
+        "success": True,
+        "input": input_value,
+        "type": "id" if is_id else "username" if is_username else "unknown",
+        "is_id": is_id,
+        "is_username": is_username
+    })
 
 # Vercel handler
 def handler(request):
